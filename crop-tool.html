@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { margin: 0; background: #1a1a1a; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: monospace; color: #fff; }
+  #container { position: relative; display: inline-block; }
+  #container img { display: block; }
+  #box { position: absolute; border: 2px solid #00ff00; background: rgba(0,255,0,0.1); pointer-events: none; display: none; }
+  #coords { margin-top: 20px; font-size: 18px; background: #000; padding: 12px 24px; border-radius: 8px; }
+  #hint { margin-top: 10px; color: #888; font-size: 14px; }
+  select { font-family: monospace; font-size: 16px; padding: 6px 12px; margin-bottom: 16px; background: #222; color: #fff; border: 1px solid #555; border-radius: 4px; }
+  #pct { margin-top: 8px; color: #0f0; font-size: 16px; }
+</style>
+</head>
+<body>
+  <select id="picker">
+    <optgroup label="Pokemon">
+      <option value="base1/4_hires.png">Charizard (base1-4)</option>
+      <option value="base1/15_hires.png">Venusaur (base1-15)</option>
+      <option value="base1/25_hires.png">Pikachu (base1-25)</option>
+    </optgroup>
+    <optgroup label="Trainer">
+      <option value="base1/89_hires.png">Professor Oak (base1-89)</option>
+      <option value="base1/91_hires.png">Computer Search (base1-91)</option>
+      <option value="base1/93_hires.png">Gust of Wind (base1-93)</option>
+      <option value="base2/26_hires.png">Recycle (base2-26)</option>
+    </optgroup>
+    <optgroup label="Energy">
+      <option value="base1/97_hires.png">Fire Energy (base1-97)</option>
+      <option value="base1/100_hires.png">Grass Energy (base1-100)</option>
+    </optgroup>
+  </select>
+  <div id="container">
+    <img id="card" src="https://images.pokemontcg.io/base1/4_hires.png" crossorigin>
+    <div id="box"></div>
+  </div>
+  <div id="coords">Draw a box around the art</div>
+  <div id="pct"></div>
+  <div id="hint">Click and drag on the card image. Switch cards with the dropdown.</div>
+<script>
+const img = document.getElementById('card');
+const box = document.getElementById('box');
+const coords = document.getElementById('coords');
+const container = document.getElementById('container');
+
+let startX, startY, drawing = false;
+
+container.addEventListener('mousedown', (e) => {
+  const rect = img.getBoundingClientRect();
+  startX = e.clientX - rect.left;
+  startY = e.clientY - rect.top;
+  drawing = true;
+  box.style.display = 'block';
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!drawing) return;
+  const rect = img.getBoundingClientRect();
+  const curX = e.clientX - rect.left;
+  const curY = e.clientY - rect.top;
+
+  const left = Math.min(startX, curX);
+  const top = Math.min(startY, curY);
+  const width = Math.abs(curX - startX);
+  const height = Math.abs(curY - startY);
+
+  box.style.left = left + 'px';
+  box.style.top = top + 'px';
+  box.style.width = width + 'px';
+  box.style.height = height + 'px';
+
+  // Convert to actual image pixel coords
+  const scaleX = img.naturalWidth / img.width;
+  const scaleY = img.naturalHeight / img.height;
+  const pxLeft = Math.round(left * scaleX);
+  const pxTop = Math.round(top * scaleY);
+  const pxWidth = Math.round(width * scaleX);
+  const pxHeight = Math.round(height * scaleY);
+
+  coords.textContent = `left: ${pxLeft}, top: ${pxTop}, width: ${pxWidth}, height: ${pxHeight}`;
+  const pctLeft = (pxLeft / img.naturalWidth * 100).toFixed(1);
+  const pctTop = (pxTop / img.naturalHeight * 100).toFixed(1);
+  const pctW = (pxWidth / img.naturalWidth * 100).toFixed(1);
+  const pctH = (pxHeight / img.naturalHeight * 100).toFixed(1);
+  document.getElementById('pct').textContent = `%: left=${pctLeft}, top=${pctTop}, width=${pctW}, height=${pctH}`;
+});
+
+document.addEventListener('mouseup', () => { drawing = false; });
+
+document.getElementById('picker').addEventListener('change', (e) => {
+  img.src = `https://images.pokemontcg.io/${e.target.value}`;
+  box.style.display = 'none';
+  coords.textContent = 'Draw a box around the art';
+  document.getElementById('pct').textContent = '';
+});
+</script>
+</body>
+</html>

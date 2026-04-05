@@ -1,0 +1,88 @@
+name: TCG Pack Roll — Game Engine
+
+# Central scoring engine. Receives dispatch events from participating repos.
+# Also triggers on own PRs for dogfooding.
+
+on:
+  repository_dispatch:
+    types: [pr-merged]
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+concurrency:
+  group: ledger-write
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  roll:
+    runs-on: ubuntu-latest
+    # Skip if it's a local PR that wasn't merged
+    if: >
+      github.event_name == 'repository_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Extract PR metadata
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "author_id=${{ github.event.client_payload.author_id }}" >> $GITHUB_OUTPUT
+            echo "author_login=${{ github.event.client_payload.author_login }}" >> $GITHUB_OUTPUT
+            echo "repo_id=${{ github.event.client_payload.repo_id }}" >> $GITHUB_OUTPUT
+            echo "repo_name=${{ github.event.client_payload.repo_name }}" >> $GITHUB_OUTPUT
+            echo "pr_number=${{ github.event.client_payload.pr_number }}" >> $GITHUB_OUTPUT
+            echo "merge_commit_sha=${{ github.event.client_payload.merge_commit_sha }}" >> $GITHUB_OUTPUT
+            echo "additions=${{ github.event.client_payload.additions }}" >> $GITHUB_OUTPUT
+            echo "deletions=${{ github.event.client_payload.deletions }}" >> $GITHUB_OUTPUT
+          else
+            echo "author_id=${{ github.event.pull_request.user.id }}" >> $GITHUB_OUTPUT
+            echo "author_login=${{ github.event.pull_request.user.login }}" >> $GITHUB_OUTPUT
+            echo "repo_id=${{ github.repository_id }}" >> $GITHUB_OUTPUT
+            echo "repo_name=${{ github.repository }}" >> $GITHUB_OUTPUT
+            echo "pr_number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+            echo "merge_commit_sha=${{ github.event.pull_request.merge_commit_sha }}" >> $GITHUB_OUTPUT
+            echo "additions=${{ github.event.pull_request.additions }}" >> $GITHUB_OUTPUT
+            echo "deletions=${{ github.event.pull_request.deletions }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Roll for cards
+        env:
+          SEASON_SECRET: ${{ secrets.SEASON_SECRET }}
+          PR_AUTHOR_ID: ${{ steps.meta.outputs.author_id }}
+          PR_AUTHOR_LOGIN: ${{ steps.meta.outputs.author_login }}
+          REPO_ID: ${{ steps.meta.outputs.repo_id }}
+          REPO_NAME: ${{ steps.meta.outputs.repo_name }}
+          PR_NUMBER: ${{ steps.meta.outputs.pr_number }}
+          MERGE_COMMIT_SHA: ${{ steps.meta.outputs.merge_commit_sha }}
+          PR_ADDITIONS: ${{ steps.meta.outputs.additions }}
+          PR_DELETIONS: ${{ steps.meta.outputs.deletions }}
+        run: node .github/scripts/pr-roll.js
+
+      - name: Commit ledger + leaderboard
+        run: |
+          git config user.name "pack-bot"
+          git config user.email "pack-bot@users.noreply.github.com"
+          git add ledger/ leaderboard.json
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "🎴 ${REPO_NAME}#${PR_NUMBER} rolled [skip ci]"
+            git pull --rebase origin main
+            git push
+          fi
+        env:
+          REPO_NAME: ${{ steps.meta.outputs.repo_name }}
+          PR_NUMBER: ${{ steps.meta.outputs.pr_number }}

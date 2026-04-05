@@ -1,0 +1,46 @@
+{
+  "season_id": "2026-q2",
+  "name": "Season 1: Kanto Classics",
+  "start_date": "2026-04-01",
+  "end_date": "2026-06-30",
+  "rules_version": "1.0",
+  "season_commitment": "GENERATE_WITH: node -e \"import('./season.js').then(m => { const s = m.generateSeasonSecret(); console.log('secret:', s.toString('hex')); console.log('commitment:', m.seasonCommitment(s)); })\"",
+  "repo_allowlist": [],
+  "pack_odds": {
+    "common": 0.55,
+    "uncommon": 0.30,
+    "rare": 0.12,
+    "holo_rare": 0.03
+  },
+  "ticket_rules": {
+    "source": "merged_pr",
+    "substance_thresholds": [
+      { "min_loc": 1, "max_loc": 149, "tickets": 1 },
+      { "min_loc": 150, "max_loc": 599, "tickets": 2 },
+      { "min_loc": 600, "max_loc": null, "tickets": 3 }
+    ],
+    "ignored_patterns": [
+      "package-lock\\.json$",
+      "pnpm-lock\\.yaml$",
+      "yarn\\.lock$",
+      "\\.snap$",
+      "\\.min\\.(js|css)$",
+      "vendor/",
+      "node_modules/",
+      "generated/",
+      "\\.gen\\.",
+      "dist/",
+      "build/"
+    ]
+  },
+  "score_weights": {
+    "Common": 1,
+    "Uncommon": 3,
+    "Rare": 8,
+    "Rare Holo": 20
+  },
+  "scoring": {
+    "primary": "binder_score",
+    "tiebreaker": "unique_cards"
+  }
+}

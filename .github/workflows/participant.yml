@@ -1,0 +1,32 @@
+name: TCG Pack Roll — Participant
+
+# Drop this workflow into any repo to participate in the game.
+# On merged PR, dispatches metadata to the central game repo.
+#
+# Setup: create a GitHub PAT with `repo` scope, add it as a
+# repository secret named TCG_DISPATCH_TOKEN in your repo.
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  dispatch:
+    if: github.event.pull_request.merged == true && secrets.TCG_DISPATCH_TOKEN != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify game repo
+        env:
+          GH_TOKEN: ${{ secrets.TCG_DISPATCH_TOKEN }}
+        run: |
+          gh api repos/daringventures/pokemon-tcg-renderer/dispatches \
+            -f event_type=pr-merged \
+            -f "client_payload[author_id]=${{ github.event.pull_request.user.id }}" \
+            -f "client_payload[author_login]=${{ github.event.pull_request.user.login }}" \
+            -f "client_payload[repo_id]=${{ github.repository_id }}" \
+            -f "client_payload[repo_name]=${{ github.repository }}" \
+            -f "client_payload[pr_number]=${{ github.event.pull_request.number }}" \
+            -f "client_payload[merge_commit_sha]=${{ github.event.pull_request.merge_commit_sha }}" \
+            -f "client_payload[additions]=${{ github.event.pull_request.additions }}" \
+            -f "client_payload[deletions]=${{ github.event.pull_request.deletions }}" \
+            -f "client_payload[changed_files]=${{ github.event.pull_request.changed_files }}"
