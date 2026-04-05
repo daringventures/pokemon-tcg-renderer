@@ -1,7 +1,6 @@
 // ============================================
 // Season Infrastructure
-// Identity, tickets, rolls, commitments
-// Everything public except the live season secret
+// Public rules, delayed-reveal crypto, fair permutation
 // ============================================
 
 import { createHash, createHmac, randomBytes } from "node:crypto";
@@ -18,6 +17,13 @@ export const TIER_TO_RARITY = {
 
 export const SCORE_WEIGHTS = { Common: 1, Uncommon: 3, Rare: 8, "Rare Holo": 20 };
 
+export const SET_BONUS_THRESHOLDS = [
+  { pct: 0.25, bonus: 20 },
+  { pct: 0.50, bonus: 60 },
+  { pct: 0.75, bonus: 150 },
+  { pct: 1.00, bonus: 400 },
+];
+
 const IGNORE_PATTERNS = [
   /package-lock\.json$/, /pnpm-lock\.yaml$/, /yarn\.lock$/, /\.snap$/,
   /\.min\.(js|css)$/, /vendor\//, /node_modules\//, /generated\//,
@@ -26,15 +32,15 @@ const IGNORE_PATTERNS = [
 
 // ============================================
 // Fair Permutation Model
-// Same probability distribution for everyone.
-// Trainer seed only changes which card sits at which position.
+// Same probability distribution for every trainer.
+// Seed only changes which card sits at which position.
 // ============================================
 
 export function positionWeights(poolSize) {
   if (poolSize <= 1) return [1];
   const weights = new Float64Array(poolSize);
   for (let i = 0; i < poolSize; i++) {
-    weights[i] = 0.75 + (i / (poolSize - 1)) * 0.6; // 0.75 to 1.35
+    weights[i] = 0.75 + (i / (poolSize - 1)) * 0.6;
   }
   return weights;
 }
@@ -135,30 +141,46 @@ export function rollCardLive(pool, trainerSeed, setId) {
 // Identity
 // ============================================
 
-export function trainerId(githubUserId) {
-  return String(githubUserId);
-}
+export function trainerId(githubUserId) { return String(githubUserId); }
 
 export function trainerSeed(seasonId, githubUserId) {
   return createHash("sha256").update(`trainer:v1||${seasonId}||${githubUserId}`).digest();
 }
 
 // ============================================
-// Season lifecycle
+// Season lifecycle + daily reveal
 // ============================================
 
 export function generateSeasonSecret() { return randomBytes(32); }
 export function seasonCommitment(secret) { return createHash("sha256").update(secret).digest("hex"); }
-export function dayKey(secret, dateStr) { return createHmac("sha256", secret).update(dateStr).digest(); }
-export function dayCommitment(secret, dateStr) { return createHash("sha256").update(dayKey(secret, dateStr)).digest("hex"); }
+
+export function dayKey(secret, dateStr) {
+  return createHmac("sha256", secret).update(dateStr).digest();
+}
+
+export function dayCommitment(secret, dateStr) {
+  return createHash("sha256").update(dayKey(secret, dateStr)).digest("hex");
+}
+
+export function generateDayCommitments(secret, startDate, endDate) {
+  const commitments = {};
+  const d = new Date(startDate);
+  const end = new Date(endDate);
+  while (d <= end) {
+    const dateStr = d.toISOString().slice(0, 10);
+    commitments[dateStr] = dayCommitment(secret, dateStr);
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return commitments;
+}
 
 // ============================================
 // Tickets
 // ============================================
 
-export function ticketId({ seasonId, repoId, prNumber, mergeCommitSha, authorUserId, ticketIndex = 0 }) {
+export function ticketId({ seasonId, repoId, prNumber, mergeCommitSha, authorUserId, ticketIndex = 1 }) {
   return createHash("sha256")
-    .update(`season:v1||${seasonId}||${repoId}||${prNumber}||${mergeCommitSha}||${authorUserId}||${ticketIndex}`)
+    .update(`ticket:v1||${seasonId}||${repoId}||${prNumber}||${mergeCommitSha}||${authorUserId}||${ticketIndex}`)
     .digest("hex");
 }
 
@@ -182,27 +204,25 @@ export function computeDiffStats(files) {
 }
 
 // ============================================
-// Rolls — deterministic from secret + ticket
+// Rolls — deterministic from day_key + ticket
+// Every ticket earns exactly one pack. No misses.
 // ============================================
 
-export function rollSeed(secret, ticket) {
-  return createHmac("sha256", secret).update(ticket).digest();
+export function rollSeed(dayKeyBuf, ticket) {
+  return createHmac("sha256", dayKeyBuf).update(ticket).digest();
 }
 
 export function seededFloat(seed, nonce) {
   return createHmac("sha256", seed).update(nonce).digest().readUInt32BE(0) / 0x100000000;
 }
 
-export function ticketEarnsPack(secret, ticket) {
-  return rollSeed(secret, ticket)[0] < 102;
+export function ticketSet(dayKeyBuf, ticket, sets) {
+  const rs = rollSeed(dayKeyBuf, ticket);
+  return sets[rs[0] % sets.length];
 }
 
-export function ticketSet(secret, ticket, sets) {
-  return sets[rollSeed(secret, ticket)[1] % sets.length];
-}
-
-export function rollPack(secret, ticket, pool, trSeed, setId = "unknown") {
-  const rs = rollSeed(secret, ticket);
+export function rollPack(dayKeyBuf, ticket, pool, trSeed, setId = "unknown") {
+  const rs = rollSeed(dayKeyBuf, ticket);
   const cards = [];
   for (let i = 0; i < 3; i++) {
     const rarityRoll = seededFloat(rs, `rarity:${i}`);
@@ -223,60 +243,81 @@ export function rollPack(secret, ticket, pool, trSeed, setId = "unknown") {
 }
 
 // ============================================
-// Scoring
+// Scoring — unique cards only, no duplicates
 // ============================================
 
-export function binderScore(cards, cardMeta) {
+export function binderScore(cards, cardRarityMap) {
   let score = 0;
-  const seen = new Set();
-  for (const [cardId, count] of Object.entries(cards)) {
-    if (count < 1) continue;
-    seen.add(cardId);
-    score += SCORE_WEIGHTS[cardMeta[cardId]?.rarity] || SCORE_WEIGHTS.Common;
+  const owned = new Set(Object.keys(cards).filter(id => cards[id] > 0));
+
+  for (const cardId of owned) {
+    score += SCORE_WEIGHTS[cardRarityMap?.[cardId] || "Common"] || 1;
   }
+
   const setTotals = { base1: 102, base2: 64, base3: 62 };
   for (const [setId, total] of Object.entries(setTotals)) {
-    const pct = [...seen].filter(id => id.startsWith(setId + "-")).length / total;
-    if (pct >= 1.0) score += 100;
-    else if (pct >= 0.75) score += 50;
-    else if (pct >= 0.50) score += 20;
-    else if (pct >= 0.25) score += 5;
+    const pct = [...owned].filter(id => id.startsWith(setId + "-")).length / total;
+    for (const t of SET_BONUS_THRESHOLDS) {
+      if (pct >= t.pct) score += t.bonus;
+    }
   }
+
   return score;
 }
 
 // ============================================
-// Ledger + manifest formats
+// Ledger record
 // ============================================
 
 export function ledgerRecord({
   seasonId, ticketId, repoId, prNumber, mergeCommitSha,
-  authorUserId, authorLogin, eligible, ticketIndex, ticketTotal,
-  cards, setId, rollCommitment,
+  authorUserId, authorLogin, eligible, ticketIndex, ticketCount,
+  eventDate, setId, cards, binderScoreAfter, dayKeyRef, rulesVersion,
 }) {
   return {
-    v: 1, season_id: seasonId, ticket_id: ticketId,
-    repo_id: repoId, pr_number: prNumber, merge_commit_sha: mergeCommitSha,
-    author_user_id: authorUserId, author_login: authorLogin,
-    eligible, ticket_index: ticketIndex, ticket_total: ticketTotal,
-    set_id: setId || null, cards: cards || [],
-    roll_commitment: rollCommitment || null,
+    v: 1,
+    rules_version: rulesVersion || "1.0",
+    season_id: seasonId,
+    ticket_id: ticketId,
+    repo_id: repoId,
+    pr_number: prNumber,
+    merge_commit_sha: mergeCommitSha,
+    author_user_id: authorUserId,
+    author_login: authorLogin,
+    eligible,
+    ticket_index: ticketIndex,
+    ticket_count: ticketCount,
+    event_date: eventDate,
+    set_id: setId || null,
+    cards: cards || [],
+    binder_score_after: binderScoreAfter ?? null,
+    day_key_ref: dayKeyRef || null,
     created_at: new Date().toISOString(),
   };
 }
 
+// ============================================
+// Season manifest
+// ============================================
+
 export function createSeasonManifest({
   seasonId, name, startDate, endDate, rulesVersion,
-  seasonCommitment: commitment, repoAllowlist, scoring,
+  seasonCommitment: commitment, dayCommitments, repoAllowlist, scoring,
 }) {
   return {
-    season_id: seasonId, name, start_date: startDate, end_date: endDate,
-    rules_version: rulesVersion || "1.0", season_commitment: commitment,
+    season_id: seasonId,
+    name,
+    rules_version: rulesVersion || "1.0",
+    start_date: startDate,
+    end_date: endDate,
+    season_commitment: commitment,
+    day_commitments: dayCommitments || {},
     repo_allowlist: repoAllowlist || [],
+    pack_size: 3,
     pack_odds: { common: 0.55, uncommon: 0.30, rare: 0.12, holo_rare: 0.03 },
     ticket_rules: {
       source: "merged_pr",
-      substance_thresholds: [
+      thresholds: [
         { min_loc: 1, max_loc: 149, tickets: 1 },
         { min_loc: 150, max_loc: 599, tickets: 2 },
         { min_loc: 600, max_loc: null, tickets: 3 },
@@ -284,6 +325,10 @@ export function createSeasonManifest({
       ignored_patterns: IGNORE_PATTERNS.map(p => p.source),
     },
     score_weights: SCORE_WEIGHTS,
-    scoring: scoring || { primary: "binder_score", tiebreaker: "unique_cards" },
+    set_bonuses: SET_BONUS_THRESHOLDS,
+    scoring: scoring || {
+      primary: "binder_score",
+      tiebreakers: ["sets_completed", "fewer_tickets", "earlier_timestamp"],
+    },
   };
 }

@@ -1,11 +1,13 @@
 {
   "season_id": "2026-q2",
   "name": "Season 1: Kanto Classics",
+  "rules_version": "1.0",
   "start_date": "2026-04-01",
   "end_date": "2026-06-30",
-  "rules_version": "1.0",
-  "season_commitment": "GENERATE_WITH: node -e \"import('./season.js').then(m => { const s = m.generateSeasonSecret(); console.log('secret:', s.toString('hex')); console.log('commitment:', m.seasonCommitment(s)); })\"",
+  "season_commitment": "TO_GENERATE",
+  "day_commitments": {},
   "repo_allowlist": [],
+  "pack_size": 3,
   "pack_odds": {
     "common": 0.55,
     "uncommon": 0.30,
@@ -14,7 +16,7 @@
   },
   "ticket_rules": {
     "source": "merged_pr",
-    "substance_thresholds": [
+    "thresholds": [
       { "min_loc": 1, "max_loc": 149, "tickets": 1 },
       { "min_loc": 150, "max_loc": 599, "tickets": 2 },
       { "min_loc": 600, "max_loc": null, "tickets": 3 }
@@ -39,8 +41,14 @@
     "Rare": 8,
     "Rare Holo": 20
   },
+  "set_bonuses": [
+    { "pct": 0.25, "bonus": 20 },
+    { "pct": 0.50, "bonus": 60 },
+    { "pct": 0.75, "bonus": 150 },
+    { "pct": 1.00, "bonus": 400 }
+  ],
   "scoring": {
     "primary": "binder_score",
-    "tiebreaker": "unique_cards"
+    "tiebreakers": ["sets_completed", "fewer_tickets", "earlier_timestamp"]
   }
 }

@@ -1,7 +1,7 @@
 // ============================================
 // PR Roll — Central Game Engine
-// Receives dispatch events from participating repos.
-// Scores work, rolls cards, appends to ledger, derives leaderboard.
+// Every ticket earns a pack. Day-key-based rolls.
+// Idempotent — re-running same event does not duplicate.
 // ============================================
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "node:fs";
@@ -9,9 +9,9 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 import {
-  trainerSeed, ticketId, ticketCount,
-  rollPack, ticketEarnsPack, ticketSet, rollSeed,
-  ledgerRecord, SCORE_WEIGHTS, TIER_TO_RARITY,
+  trainerSeed, ticketId, ticketCount, dayKey,
+  rollPack, ticketSet, rollSeed,
+  ledgerRecord, binderScore, SCORE_WEIGHTS, TIER_TO_RARITY,
 } from "../../season.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -20,7 +20,7 @@ const LEDGER_DIR = resolve(ROOT, "ledger");
 const LEADERBOARD_FILE = resolve(ROOT, "leaderboard.json");
 
 // ============================================
-// Card pools — accurate to WotC-era sets
+// Card pools — WotC-era sets, mutually exclusive tiers
 // ============================================
 
 const CARD_POOLS = {
@@ -46,7 +46,7 @@ const CARD_POOLS = {
 
 const SETS = ["base1", "base2", "base3"];
 
-// Rarity map from card pools (not from card number heuristics)
+// Rarity map from card pools
 const cardRarityMap = {};
 for (const [sid, tiers] of Object.entries(CARD_POOLS)) {
   for (const [tier, ids] of Object.entries(tiers)) {
@@ -67,84 +67,97 @@ const authorLogin = process.env.PR_AUTHOR_LOGIN;
 const mergeCommitSha = process.env.MERGE_COMMIT_SHA;
 const repoId = process.env.REPO_ID;
 const repoName = process.env.REPO_NAME;
-// Additions/deletions come from the PR event payload — works for private repos
 const prAdditions = parseInt(process.env.PR_ADDITIONS || "0", 10);
 const prDeletions = parseInt(process.env.PR_DELETIONS || "0", 10);
 
-if (!seasonSecretHex || !seasonSecret) {
-  console.log("SEASON_SECRET not set — skipping roll");
-  process.exit(0);
-}
-
-if (!mergeCommitSha || !authorUserId || !prNumber) {
-  console.error("Missing PR metadata");
-  process.exit(1);
-}
+if (!seasonSecretHex || !seasonSecret) { console.log("SEASON_SECRET not set — skipping"); process.exit(0); }
+if (!mergeCommitSha || !authorUserId || !prNumber) { console.error("Missing PR metadata"); process.exit(1); }
 
 // ============================================
-// Season + substance
+// Season config
 // ============================================
 
 const manifestPath = resolve(ROOT, "season-manifest.json");
-let manifest = { season_id: "2026-q2" };
+let manifest = { season_id: "2026-q2", rules_version: "1.0" };
 if (existsSync(manifestPath)) manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 const seasonId = manifest.season_id;
+const rulesVersion = manifest.rules_version || "1.0";
+const eventDate = new Date().toISOString().slice(0, 10);
 
-console.log(`${repoName}#${prNumber} by ${authorLogin} (${authorUserId})`);
-console.log(`Merge: ${mergeCommitSha}`);
-console.log(`Season: ${seasonId}`);
+console.log(`${repoName}#${prNumber} by ${authorLogin} | ${eventDate} | season: ${seasonId}`);
 
-// Substance from PR-level stats (no private repo API access needed)
+// ============================================
+// Idempotency — check if this PR was already scored
+// ============================================
+
+if (!existsSync(LEDGER_DIR)) mkdirSync(LEDGER_DIR, { recursive: true });
+const ledgerFile = resolve(LEDGER_DIR, `${seasonId}.ndjson`);
+
+const prKey = `${repoId}:${prNumber}:${mergeCommitSha}`;
+if (existsSync(ledgerFile)) {
+  const existing = readFileSync(ledgerFile, "utf8");
+  if (existing.includes(mergeCommitSha)) {
+    console.log("Already scored — skipping (idempotent)");
+    process.exit(0);
+  }
+}
+
+// ============================================
+// Substance + tickets
+// ============================================
+
 const netLoc = prAdditions + prDeletions;
 const numTickets = ticketCount({ netReviewedLoc: netLoc });
 
 console.log(`Substance: ${netLoc} LOC → ${numTickets} ticket(s)`);
 
-if (!existsSync(LEDGER_DIR)) mkdirSync(LEDGER_DIR, { recursive: true });
-const ledgerFile = resolve(LEDGER_DIR, `${seasonId}.ndjson`);
-
 if (numTickets === 0) {
-  console.log("No substance — no tickets");
   appendFileSync(ledgerFile, JSON.stringify(ledgerRecord({
-    seasonId, ticketId: "none", repoId, prNumber, mergeCommitSha,
-    authorUserId, authorLogin, eligible: false,
-    ticketIndex: 0, ticketTotal: 0, cards: [], setId: null, rollCommitment: null,
+    seasonId, ticketId: "ineligible", repoId, prNumber, mergeCommitSha,
+    authorUserId, authorLogin, eligible: false, ticketIndex: 0, ticketCount: 0,
+    eventDate, setId: null, cards: [], binderScoreAfter: null,
+    dayKeyRef: eventDate, rulesVersion,
   })) + "\n");
+  console.log("No substance — logged as ineligible");
   process.exit(0);
 }
 
 // ============================================
-// Mint tickets and roll cards
+// Derive day key and roll packs
 // ============================================
 
+const dk = dayKey(seasonSecret, eventDate);
 const trSeed = trainerSeed(seasonId, authorUserId);
 
-for (let i = 0; i < numTickets; i++) {
-  const tId = ticketId({ seasonId, repoId, prNumber, mergeCommitSha, authorUserId, ticketIndex: i });
-  const earnsPack = ticketEarnsPack(seasonSecret, tId);
-
-  if (!earnsPack) {
-    console.log(`  Ticket ${i + 1}/${numTickets}: no pack`);
-    appendFileSync(ledgerFile, JSON.stringify(ledgerRecord({
-      seasonId, ticketId: tId, repoId, prNumber, mergeCommitSha,
-      authorUserId, authorLogin, eligible: true,
-      ticketIndex: i, ticketTotal: numTickets, cards: [], setId: null, rollCommitment: null,
-    })) + "\n");
-    continue;
+// Accumulate binder state for this trainer from existing ledger
+const trainerCards = {};
+if (existsSync(ledgerFile)) {
+  for (const line of readFileSync(ledgerFile, "utf8").split("\n").filter(l => l.trim())) {
+    const entry = JSON.parse(line);
+    if (entry.author_user_id === authorUserId && entry.cards?.length > 0) {
+      for (const c of entry.cards) trainerCards[c.id] = (trainerCards[c.id] || 0) + 1;
+    }
   }
+}
 
-  const setId = ticketSet(seasonSecret, tId, SETS);
-  const cards = rollPack(seasonSecret, tId, CARD_POOLS[setId], trSeed, setId);
+for (let i = 1; i <= numTickets; i++) {
+  const tId = ticketId({ seasonId, repoId, prNumber, mergeCommitSha, authorUserId, ticketIndex: i });
+  const setId = ticketSet(dk, tId, SETS);
+  const cards = rollPack(dk, tId, CARD_POOLS[setId], trSeed, setId);
 
-  console.log(`  Ticket ${i + 1}/${numTickets}: 📦 ${setId}`);
-  for (const c of cards) console.log(`    ${c.isHolo ? "★" : "·"} ${c.cardId} (${c.tier})`);
+  // Update running binder
+  for (const c of cards) trainerCards[c.id] = (trainerCards[c.id] || 0) + 1;
+  const scoreAfter = binderScore(trainerCards, cardRarityMap);
+
+  console.log(`  Ticket ${i}/${numTickets}: 📦 ${setId} (score: ${scoreAfter})`);
+  for (const c of cards) console.log(`    ${c.isHolo ? "★" : "·"} ${c.cardId} (${TIER_TO_RARITY[c.tier]})`);
 
   appendFileSync(ledgerFile, JSON.stringify(ledgerRecord({
     seasonId, ticketId: tId, repoId, prNumber, mergeCommitSha,
-    authorUserId, authorLogin, eligible: true,
-    ticketIndex: i, ticketTotal: numTickets,
-    cards: cards.map(c => ({ id: c.cardId, tier: c.tier, isHolo: c.isHolo })),
-    setId, rollCommitment: rollSeed(seasonSecret, tId).toString("hex").slice(0, 16),
+    authorUserId, authorLogin, eligible: true, ticketIndex: i, ticketCount: numTickets,
+    eventDate, setId,
+    cards: cards.map(c => ({ id: c.cardId, tier: c.tier, rarity: TIER_TO_RARITY[c.tier], isHolo: c.isHolo })),
+    binderScoreAfter: scoreAfter, dayKeyRef: eventDate, rulesVersion,
   })) + "\n");
 }
 
@@ -154,9 +167,7 @@ for (let i = 0; i < numTickets; i++) {
 
 console.log("\nRebuilding leaderboard...");
 
-const ledgerLines = existsSync(ledgerFile)
-  ? readFileSync(ledgerFile, "utf8").split("\n").filter(l => l.trim()).map(l => JSON.parse(l))
-  : [];
+const ledgerLines = readFileSync(ledgerFile, "utf8").split("\n").filter(l => l.trim()).map(l => JSON.parse(l));
 
 const trainers = {};
 for (const entry of ledgerLines) {
@@ -164,37 +175,49 @@ for (const entry of ledgerLines) {
   const t = trainers[entry.author_login] ||= {
     user_id: entry.author_user_id, cards: {},
     packs_opened: 0, holos_pulled: 0,
-    prs_merged: new Set(), tickets_earned: 0,
-    last_repo: null, last_roll: null,
+    prs_merged: new Set(), tickets_spent: 0,
+    sets_completed: 0, last_roll: null, last_score_at: null,
   };
   t.prs_merged.add(`${entry.repo_id}:${entry.pr_number}`);
-  t.last_repo = entry.repo_id;
   t.last_roll = entry.created_at;
 
   if (entry.eligible && entry.cards?.length > 0) {
-    t.tickets_earned++;
+    t.tickets_spent++;
     t.packs_opened++;
     for (const c of entry.cards) {
       t.cards[c.id] = (t.cards[c.id] || 0) + 1;
       if (c.isHolo) t.holos_pulled++;
     }
+    if (entry.binder_score_after != null) t.last_score_at = entry.created_at;
   }
 }
 
 const leaderboard = Object.entries(trainers).map(([login, t]) => {
-  let score = 0;
-  for (const cardId of Object.keys(t.cards)) {
-    score += SCORE_WEIGHTS[cardRarityMap[cardId] || "Common"] || 1;
+  const score = binderScore(t.cards, cardRarityMap);
+
+  // Count completed sets
+  const setTotals = { base1: 102, base2: 64, base3: 62 };
+  let setsCompleted = 0;
+  for (const [sid, total] of Object.entries(setTotals)) {
+    const owned = Object.keys(t.cards).filter(id => id.startsWith(sid + "-")).length;
+    if (owned >= total) setsCompleted++;
   }
+
   return {
     login, user_id: t.user_id, score,
     unique_cards: Object.keys(t.cards).length,
     total_cards: Object.values(t.cards).reduce((a, b) => a + b, 0),
     packs_opened: t.packs_opened, holos_pulled: t.holos_pulled,
-    prs_merged: t.prs_merged.size, tickets_earned: t.tickets_earned,
-    last_roll: t.last_roll,
+    sets_completed: setsCompleted, tickets_spent: t.tickets_spent,
+    prs_merged: t.prs_merged.size, last_roll: t.last_roll,
   };
-}).sort((a, b) => b.score - a.score || b.unique_cards - a.unique_cards);
+}).sort((a, b) =>
+  // Tiebreakers per spec: score → sets → fewer tickets → earlier
+  b.score - a.score
+  || b.sets_completed - a.sets_completed
+  || a.tickets_spent - b.tickets_spent
+  || (a.last_roll || "").localeCompare(b.last_roll || "")
+);
 
 writeFileSync(LEADERBOARD_FILE, JSON.stringify(leaderboard, null, 2) + "\n");
 
