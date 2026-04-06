@@ -113,8 +113,7 @@ No waiting. No reveals. Anyone can recompute any roll from public data.
 - Allowlisted repos only
 - Idempotent ticket IDs (same event cannot score twice)
 - Append-only ledger
-- Daily commitment reveals
-- All rules public
+- All rules and outcomes public
 
 ## What's not ranked
 
@@ -122,4 +121,4 @@ Local streak bonuses, variety tracking, and the local pack-opening experience ar
 
 ## One-sentence summary
 
-GitHub proves the work, public rules define the game, delayed-reveal crypto supplies fair suspense, trainer identity shapes collection flavor, and an append-only public ledger makes the ladder credible.
+GitHub proves the work, public rules define the game, merge-SHA entropy makes every roll verifiable, trainer identity shapes collection flavor, and an append-only public ledger makes the ladder credible.
