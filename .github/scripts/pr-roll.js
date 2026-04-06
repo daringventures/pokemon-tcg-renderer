@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 import {
-  trainerSeed, ticketId, ticketCount, dayKey,
-  rollPack, ticketSet, rollSeed,
+  trainerSeed, ticketId, ticketCount,
+  rollPack, ticketSet,
   ledgerRecord, binderScore, SCORE_WEIGHTS, TIER_TO_RARITY,
 } from "../../season.js";
 
@@ -59,8 +59,6 @@ for (const [sid, tiers] of Object.entries(CARD_POOLS)) {
 // Read env
 // ============================================
 
-const seasonSecretHex = process.env.SEASON_SECRET;
-const seasonSecret = seasonSecretHex ? Buffer.from(seasonSecretHex, "hex") : null;
 const prNumber = parseInt(process.env.PR_NUMBER, 10);
 const authorUserId = process.env.PR_AUTHOR_ID;
 const authorLogin = process.env.PR_AUTHOR_LOGIN;
@@ -70,7 +68,6 @@ const repoName = process.env.REPO_NAME;
 const prAdditions = parseInt(process.env.PR_ADDITIONS || "0", 10);
 const prDeletions = parseInt(process.env.PR_DELETIONS || "0", 10);
 
-if (!seasonSecretHex || !seasonSecret) { console.log("SEASON_SECRET not set — skipping"); process.exit(0); }
 if (!mergeCommitSha || !authorUserId || !prNumber) { console.error("Missing PR metadata"); process.exit(1); }
 
 // ============================================
@@ -115,18 +112,16 @@ if (numTickets === 0) {
   appendFileSync(ledgerFile, JSON.stringify(ledgerRecord({
     seasonId, ticketId: "ineligible", repoId, prNumber, mergeCommitSha,
     authorUserId, authorLogin, eligible: false, ticketIndex: 0, ticketCount: 0,
-    eventDate, setId: null, cards: [], binderScoreAfter: null,
-    dayKeyRef: eventDate, rulesVersion,
+    eventDate, setId: null, cards: [], binderScoreAfter: null, rulesVersion,
   })) + "\n");
   console.log("No substance — logged as ineligible");
   process.exit(0);
 }
 
 // ============================================
-// Derive day key and roll packs
+// Roll packs — entropy from merge SHA, no secrets
 // ============================================
 
-const dk = dayKey(seasonSecret, eventDate);
 const trSeed = trainerSeed(seasonId, authorUserId);
 
 // Accumulate binder state for this trainer from existing ledger
@@ -142,8 +137,8 @@ if (existsSync(ledgerFile)) {
 
 for (let i = 1; i <= numTickets; i++) {
   const tId = ticketId({ seasonId, repoId, prNumber, mergeCommitSha, authorUserId, ticketIndex: i });
-  const setId = ticketSet(dk, tId, SETS);
-  const cards = rollPack(dk, tId, CARD_POOLS[setId], trSeed, setId);
+  const setId = ticketSet(tId, mergeCommitSha, SETS);
+  const cards = rollPack(tId, mergeCommitSha, CARD_POOLS[setId], trSeed, setId);
 
   // Update running binder
   for (const c of cards) trainerCards[c.id] = (trainerCards[c.id] || 0) + 1;
@@ -157,7 +152,7 @@ for (let i = 1; i <= numTickets; i++) {
     authorUserId, authorLogin, eligible: true, ticketIndex: i, ticketCount: numTickets,
     eventDate, setId,
     cards: cards.map(c => ({ id: c.cardId, tier: c.tier, rarity: TIER_TO_RARITY[c.tier], isHolo: c.isHolo })),
-    binderScoreAfter: scoreAfter, dayKeyRef: eventDate, rulesVersion,
+    binderScoreAfter: scoreAfter, rulesVersion,
   })) + "\n");
 }
 

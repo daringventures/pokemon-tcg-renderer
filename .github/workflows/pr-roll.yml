@@ -60,7 +60,6 @@ jobs:
 
       - name: Roll for cards
         env:
-          SEASON_SECRET: ${{ secrets.SEASON_SECRET }}
           PR_AUTHOR_ID: ${{ steps.meta.outputs.author_id }}
           PR_AUTHOR_LOGIN: ${{ steps.meta.outputs.author_login }}
           REPO_ID: ${{ steps.meta.outputs.repo_id }}

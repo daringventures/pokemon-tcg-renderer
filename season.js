@@ -1,9 +1,11 @@
 // ============================================
 // Season Infrastructure
-// Public rules, delayed-reveal crypto, fair permutation
+// Public rules, merge-SHA entropy, fair permutation
+// No secrets. No commitments. No reveals.
+// The merge commit SHA is the entropy source.
 // ============================================
 
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 
 // ============================================
 // Constants
@@ -147,32 +149,6 @@ export function trainerSeed(seasonId, githubUserId) {
   return createHash("sha256").update(`trainer:v1||${seasonId}||${githubUserId}`).digest();
 }
 
-// ============================================
-// Season lifecycle + daily reveal
-// ============================================
-
-export function generateSeasonSecret() { return randomBytes(32); }
-export function seasonCommitment(secret) { return createHash("sha256").update(secret).digest("hex"); }
-
-export function dayKey(secret, dateStr) {
-  return createHmac("sha256", secret).update(dateStr).digest();
-}
-
-export function dayCommitment(secret, dateStr) {
-  return createHash("sha256").update(dayKey(secret, dateStr)).digest("hex");
-}
-
-export function generateDayCommitments(secret, startDate, endDate) {
-  const commitments = {};
-  const d = new Date(startDate);
-  const end = new Date(endDate);
-  while (d <= end) {
-    const dateStr = d.toISOString().slice(0, 10);
-    commitments[dateStr] = dayCommitment(secret, dateStr);
-    d.setUTCDate(d.getUTCDate() + 1);
-  }
-  return commitments;
-}
 
 // ============================================
 // Tickets
@@ -204,25 +180,26 @@ export function computeDiffStats(files) {
 }
 
 // ============================================
-// Rolls — deterministic from day_key + ticket
-// Every ticket earns exactly one pack. No misses.
+// Rolls — deterministic from ticket + merge SHA
+// No secrets. The merge commit SHA is the entropy.
+// Unpredictable before merge, verifiable forever after.
 // ============================================
 
-export function rollSeed(dayKeyBuf, ticket) {
-  return createHmac("sha256", dayKeyBuf).update(ticket).digest();
+export function rollSeed(ticketIdHex, mergeCommitSha) {
+  return createHash("sha256").update(`${ticketIdHex}||${mergeCommitSha}`).digest();
 }
 
 export function seededFloat(seed, nonce) {
   return createHmac("sha256", seed).update(nonce).digest().readUInt32BE(0) / 0x100000000;
 }
 
-export function ticketSet(dayKeyBuf, ticket, sets) {
-  const rs = rollSeed(dayKeyBuf, ticket);
+export function ticketSet(ticketIdHex, mergeCommitSha, sets) {
+  const rs = rollSeed(ticketIdHex, mergeCommitSha);
   return sets[rs[0] % sets.length];
 }
 
-export function rollPack(dayKeyBuf, ticket, pool, trSeed, setId = "unknown") {
-  const rs = rollSeed(dayKeyBuf, ticket);
+export function rollPack(ticketIdHex, mergeCommitSha, pool, trSeed, setId = "unknown") {
+  const rs = rollSeed(ticketIdHex, mergeCommitSha);
   const cards = [];
   for (let i = 0; i < 3; i++) {
     const rarityRoll = seededFloat(rs, `rarity:${i}`);
@@ -272,7 +249,7 @@ export function binderScore(cards, cardRarityMap) {
 export function ledgerRecord({
   seasonId, ticketId, repoId, prNumber, mergeCommitSha,
   authorUserId, authorLogin, eligible, ticketIndex, ticketCount,
-  eventDate, setId, cards, binderScoreAfter, dayKeyRef, rulesVersion,
+  eventDate, setId, cards, binderScoreAfter, rulesVersion,
 }) {
   return {
     v: 1,
@@ -291,7 +268,6 @@ export function ledgerRecord({
     set_id: setId || null,
     cards: cards || [],
     binder_score_after: binderScoreAfter ?? null,
-    day_key_ref: dayKeyRef || null,
     created_at: new Date().toISOString(),
   };
 }
@@ -301,8 +277,7 @@ export function ledgerRecord({
 // ============================================
 
 export function createSeasonManifest({
-  seasonId, name, startDate, endDate, rulesVersion,
-  seasonCommitment: commitment, dayCommitments, repoAllowlist, scoring,
+  seasonId, name, startDate, endDate, rulesVersion, repoAllowlist, scoring,
 }) {
   return {
     season_id: seasonId,
@@ -310,8 +285,6 @@ export function createSeasonManifest({
     rules_version: rulesVersion || "1.0",
     start_date: startDate,
     end_date: endDate,
-    season_commitment: commitment,
-    day_commitments: dayCommitments || {},
     repo_allowlist: repoAllowlist || [],
     pack_size: 3,
     pack_odds: { common: 0.55, uncommon: 0.30, rare: 0.12, holo_rare: 0.03 },

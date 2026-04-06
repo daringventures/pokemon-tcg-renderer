@@ -88,24 +88,23 @@ The ladder ranks by **binder score**, not activity volume.
 
 ## Randomness and verification
 
-Outcomes are unpredictable before your PR merges. After reveal, anyone can verify every roll.
+Outcomes are unpredictable before your PR merges. After merge, anyone can verify every roll immediately.
 
 **How it works:**
-- At season start, a secret is generated and its hash is published as `season_commitment`
-- Each day gets a subkey: `day_key[d] = HMAC(season_secret, d)`
-- Daily commitment hashes are published at season start
-- Each `day_key` is revealed the following day
-- Your roll: `roll_seed = HMAC(day_key[d], ticket_id)`
-- Everything after that is deterministic
+- Your roll: `roll_seed = SHA256(ticket_id + merge_commit_sha)`
+- The ticket ID is deterministic from public GitHub facts
+- The merge commit SHA is the entropy — unpredictable before merge, immutable after
+- No secrets. No reveal ceremonies. No trust required.
 
-**What you can verify after reveal:**
+**What you can verify right now:**
 1. Your PR was eligible under public rules
-2. Your ticket IDs were constructed correctly
-3. The day key matches its published commitment
-4. Your roll seed matches `HMAC(day_key, ticket_id)`
-5. Your pack outcome was derived correctly
-6. The ledger entry is accurate
-7. The leaderboard is the correct reduction of the ledger
+2. Your ticket IDs were constructed correctly from public inputs
+3. Your roll seed is `SHA256(ticket_id + merge_commit_sha)`
+4. Your pack outcome was derived deterministically from the roll seed
+5. The ledger entry matches the computed outcome
+6. The leaderboard is the correct reduction of the ledger
+
+No waiting. No reveals. Anyone can recompute any roll from public data.
 
 ## Anti-abuse
 
