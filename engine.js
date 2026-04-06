@@ -1,6 +1,6 @@
 // ============================================
 // Pokemon TCG Status Line Game Engine
-// Streak + variety rewards, 3-card packs
+// Streak bonus, 3-card packs
 // ============================================
 
 import { readFileSync, existsSync } from "node:fs";
