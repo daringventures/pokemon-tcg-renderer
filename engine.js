@@ -1,82 +1,92 @@
 // ============================================
 // Pokemon TCG — CLI
-// Reads from the public ledger. Ranked game only.
+// Works from any directory. Fetches from the game repo.
+// The game is ripping packs. GitHub keeps it fair.
 // ============================================
 
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { join } from "node:path";
 import { RESET, BOLD, DIM, YELLOW, GREEN, CYAN, RED, WHITE } from "./constants.js";
 import { TYPE_COLOR, RARITY_ICON } from "./constants.js";
-import { SCORE_WEIGHTS, SET_BONUS_THRESHOLDS, TIER_TO_RARITY } from "./season.js";
 
-const ROOT = process.cwd();
-const LEDGER_DIR = join(ROOT, "ledger");
+const GAME_REPO = "daringventures/pokemon-tcg-renderer";
+const SEASON = "2026-q2";
+const LOCAL_DIR = join(process.env.HOME || process.env.USERPROFILE, ".pokemon-tcg");
+const RIPPED_FILE = join(LOCAL_DIR, "last-ripped");
 
 // ============================================
-// Read ledger for a player
+// GitHub data fetching
 // ============================================
 
-function getGitLogin() {
-  try { return execSync("gh api user -q .login", { encoding: "utf8" }).trim(); } catch {}
-  try { return execSync("git config user.name", { encoding: "utf8" }).trim(); } catch {}
+function fetchRaw(path) {
+  try {
+    return execSync(
+      `curl -sf "https://raw.githubusercontent.com/${GAME_REPO}/main/${path}"`,
+      { encoding: "utf8" }
+    );
+  } catch { return null; }
+}
+
+function getLogin() {
+  try { return execSync("gh api user -q .login", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim(); } catch {}
+  try { return execSync("git config user.name", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim(); } catch {}
   return null;
 }
 
-function loadLedger(seasonId) {
-  const f = join(LEDGER_DIR, `${seasonId}.ndjson`);
-  if (!existsSync(f)) return [];
-  return readFileSync(f, "utf8").split("\n").filter(l => l.trim()).map(l => JSON.parse(l));
+function fetchLedger() {
+  const raw = fetchRaw(`ledger/${SEASON}.ndjson`);
+  if (!raw) return [];
+  return raw.split("\n").filter(l => l.trim()).map(l => JSON.parse(l));
 }
 
-function loadLeaderboard() {
-  const f = join(ROOT, "leaderboard.json");
-  if (!existsSync(f)) return [];
-  const lb = JSON.parse(readFileSync(f, "utf8"));
-  return Array.isArray(lb) ? lb : [];
+function fetchLeaderboard() {
+  const raw = fetchRaw("leaderboard.json");
+  if (!raw) return [];
+  return JSON.parse(raw);
 }
 
-function playerCards(ledger, login) {
+// ============================================
+// Player state from ledger
+// ============================================
+
+function playerEntries(ledger, login) {
+  return ledger.filter(e => e.author_login === login && e.eligible && e.cards?.length > 0);
+}
+
+function playerCards(entries) {
   const cards = {};
-  for (const entry of ledger) {
-    if (entry.author_login !== login) continue;
-    if (!entry.eligible || !entry.cards?.length) continue;
-    for (const c of entry.cards) cards[c.id] = (cards[c.id] || 0) + 1;
-  }
-  return cards;
-}
-
-function playerStats(ledger, login) {
-  const cards = {};
-  let packs = 0, holos = 0, tickets = 0;
-  for (const entry of ledger) {
-    if (entry.author_login !== login) continue;
-    if (!entry.eligible || !entry.cards?.length) continue;
-    tickets++;
-    packs++;
+  let holos = 0;
+  for (const entry of entries) {
     for (const c of entry.cards) {
       cards[c.id] = (cards[c.id] || 0) + 1;
       if (c.isHolo) holos++;
     }
   }
-  return { cards, packs, holos, tickets, unique: Object.keys(cards).length };
+  return { cards, holos, unique: Object.keys(cards).length, packs: entries.length };
+}
+
+function unrippedEntries(entries) {
+  if (!existsSync(LOCAL_DIR)) mkdirSync(LOCAL_DIR, { recursive: true });
+  const lastRipped = existsSync(RIPPED_FILE) ? readFileSync(RIPPED_FILE, "utf8").trim() : "";
+  if (!lastRipped) return entries;
+  return entries.filter(e => e.created_at > lastRipped);
+}
+
+function markRipped(entries) {
+  if (!entries.length) return;
+  if (!existsSync(LOCAL_DIR)) mkdirSync(LOCAL_DIR, { recursive: true });
+  const latest = entries.reduce((a, b) => a.created_at > b.created_at ? a : b);
+  writeFileSync(RIPPED_FILE, latest.created_at);
 }
 
 function getLevel(unique) {
   return Math.floor((unique / 228) * 100);
 }
 
-// ============================================
-// Helpers
-// ============================================
-
-const stripAnsi = s => s.replace(/\x1b\[[0-9;]*m/g, "");
-const pad = (s, len) => s + " ".repeat(Math.max(0, len - stripAnsi(s).length));
-
 function cardRarity(cardId) {
   const num = parseInt(cardId.split("-").pop(), 10);
   const set = cardId.replace(/-\d+$/, "");
-  // Approximate from set structure
   const holoMax = { base1: 16, base2: 16, base3: 13 }[set] || 16;
   const rareMax = { base1: 22, base2: 32, base3: 29 }[set] || 32;
   const uncommonMax = { base1: 42, base2: 48, base3: 45 }[set] || 48;
@@ -87,39 +97,91 @@ function cardRarity(cardId) {
 }
 
 // ============================================
+// Helpers
+// ============================================
+
+const stripAnsi = s => s.replace(/\x1b\[[0-9;]*m/g, "");
+const pad = (s, len) => s + " ".repeat(Math.max(0, len - stripAnsi(s).length));
+
+// ============================================
 // CLI
 // ============================================
 
 const command = process.argv[2];
-const seasonId = "2026-q2";
 
 if (command === "status") {
-  const login = getGitLogin();
-  const lb = loadLeaderboard();
+  const login = getLogin();
+  const lb = fetchLeaderboard();
   const me = lb.find(e => e.login === login);
 
   if (!me) {
-    console.log(`🎴 ${DIM}not ranked${RESET}`);
+    // Check for unripped packs even if not on leaderboard yet
+    const ledger = fetchLedger();
+    const entries = login ? playerEntries(ledger, login) : [];
+    const unripped = unrippedEntries(entries);
+    if (unripped.length > 0) {
+      console.log(`🎴 ${YELLOW}${BOLD}📦 ${unripped.length} pack${unripped.length > 1 ? "s" : ""}${RESET}`);
+    } else {
+      console.log(`🎴 ${DIM}merge PRs to earn packs${RESET}`);
+    }
   } else {
     const rank = lb.indexOf(me) + 1;
+    const ledger = fetchLedger();
+    const entries = playerEntries(ledger, login);
+    const unripped = unrippedEntries(entries);
+
     const parts = [`🎴 ${DIM}Lv.${RESET}${BOLD}${getLevel(me.unique_cards)}${RESET}  ${DIM}#${rank}${RESET}`];
-    if (me.unique_cards > 0) parts.push(`${DIM}${me.unique_cards}/${RESET}228`);
+    if (unripped.length > 0) parts.push(`${YELLOW}${BOLD}📦 ${unripped.length}${RESET}`);
     if (me.holos_pulled > 0) parts.push(`${YELLOW}★${me.holos_pulled}${RESET}`);
     console.log(parts.join(`  ${DIM}┃${RESET}  `));
   }
 }
 
-else if (command === "binder") {
-  const login = process.argv[3] || getGitLogin();
-  if (!login) { console.log(`${DIM}Could not determine login. Pass it as an argument.${RESET}`); process.exit(1); }
+else if (command === "rip") {
+  const login = getLogin();
+  if (!login) { console.error("Could not determine GitHub login"); process.exit(1); }
 
-  const ledger = loadLedger(seasonId);
-  const { cards, packs, holos, unique } = playerStats(ledger, login);
-  const level = getLevel(unique);
+  const ledger = fetchLedger();
+  const entries = playerEntries(ledger, login);
+  const unripped = unrippedEntries(entries);
+
+  if (unripped.length === 0) {
+    console.log(`\n${DIM}  No packs to rip. Merge PRs to earn more.${RESET}\n`);
+    process.exit(0);
+  }
+
+  console.log(`\n${BOLD}  ${unripped.length} pack${unripped.length > 1 ? "s" : ""} to rip!${RESET}\n`);
+
+  for (const entry of unripped) {
+    const setNames = { base1: "Base Set", base2: "Jungle", base3: "Fossil" };
+    const setName = setNames[entry.set_id] || entry.set_id;
+
+    console.log(`  ${DIM}${entry.repo_id}#${entry.pr_number}${RESET}  ${BOLD}${setName}${RESET}`);
+
+    for (const c of entry.cards) {
+      const rarity = c.rarity || cardRarity(c.id);
+      const icon = RARITY_ICON[rarity] || `${DIM}·${RESET}`;
+      const isHolo = c.isHolo ? ` ${YELLOW}${BOLD}HOLO${RESET}` : "";
+      console.log(`    ${icon}  ${c.id}  ${DIM}${rarity}${RESET}${isHolo}`);
+    }
+    console.log("");
+  }
+
+  markRipped(unripped);
+  console.log(`${DIM}  ${unripped.length} pack${unripped.length > 1 ? "s" : ""} ripped. Run 'binder' to see your collection.${RESET}\n`);
+}
+
+else if (command === "binder") {
+  const login = process.argv[3] || getLogin();
+  if (!login) { console.error("Pass a GitHub login as argument"); process.exit(1); }
+
+  const ledger = fetchLedger();
+  const entries = playerEntries(ledger, login);
+  const { cards, holos, unique, packs } = playerCards(entries);
   const totalCards = Object.values(cards).reduce((a, b) => a + b, 0);
+  const level = getLevel(unique);
 
   const SET_INFO = { base1: { name: "Base Set", total: 102 }, base2: { name: "Jungle", total: 64 }, base3: { name: "Fossil", total: 62 } };
-
   const W = 52;
   const boxRow = s => `│ ${s}${" ".repeat(Math.max(0, W - stripAnsi(s).length - 2))} │`;
 
@@ -149,14 +211,14 @@ else if (command === "binder") {
       const numStr = `#${cardId.split("-").pop()}`.padStart(4);
       const cnt = count > 1 ? `${YELLOW}×${count}${RESET}` : `${DIM}×1${RESET}`;
       const icon = RARITY_ICON[rarity] || `${DIM}·${RESET}`;
-      console.log(`  ${icon} ${DIM}${numStr}${RESET}  ${pad(`${cardId}`, 20)} ${pad(`${DIM}${rarity}${RESET}`, 18)} ${cnt}`);
+      console.log(`  ${icon} ${DIM}${numStr}${RESET}  ${pad(cardId, 20)} ${pad(`${DIM}${rarity}${RESET}`, 18)} ${cnt}`);
     }
   }
   console.log("");
 }
 
 else if (command === "leaderboard") {
-  const lb = loadLeaderboard();
+  const lb = fetchLeaderboard();
   if (!lb.length) { console.log(`${DIM}No leaderboard yet.${RESET}`); process.exit(0); }
 
   console.log(`╭${"─".repeat(56)}╮`);
@@ -171,5 +233,5 @@ else if (command === "leaderboard") {
 }
 
 else {
-  console.log("Usage: engine.js <status|binder [login]|leaderboard>");
+  console.log("Usage: engine.js <status|rip|binder [login]|leaderboard>");
 }
